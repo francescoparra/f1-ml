@@ -1,0 +1,5 @@
+/data/raw/fastf1_cache/*
+!/data/raw/fastf1_cache/.keep
+/outputs
+!/outputs/.keep
+config.yaml

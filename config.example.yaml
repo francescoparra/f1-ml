@@ -1,0 +1,46 @@
+# This is an example file, please remove the `.example`
+# and edit the config with your preferences.
+# Data already present is just to give an example.
+
+# Params to fetch the target session, which is needed to get
+# the driver list, session metadata, and eventual lap times
+target_session:
+  # Season and round of the target session
+  season: 2025
+  round: 24
+
+# Params to fetch historical data for training purposes.
+# Data from years prior 2018 might not be present or with less data
+history:
+  # The seasons we want to use for training
+  seasons: [2022, 2023, 2024]
+
+# The features of the application
+features:
+  # Whether to use or not Free Practice data for training, if presente
+  use_fp1: true
+  use_fp2: true
+  use_fp3: true
+
+# The settings for the model that you'll use
+model:
+  type: xgboost
+  params:
+    n_estimators: 200
+    max_depth: 4
+    learning_rate: 0.05
+    min_child_weight: 3
+    subsample: 0.8
+    colsample_bytree: 0.8
+    reg_alpha: 0.1
+    reg_lambda: 1.0
+    random_state: 42
+
+evaluation:
+  metrics: [mae, spearman]
+
+# Output settings, basically where you want to have your prediction
+# file to be generated.
+output:
+  predictions_file: outputs/predictions.csv
+  metrics_file: outputs/metrics.csv
