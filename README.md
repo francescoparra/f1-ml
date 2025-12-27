@@ -52,6 +52,12 @@ poetry install
 
 ### 2. Configure the experiment
 
+Rename `config.example.yaml`
+
+```bash
+cp config.example.yaml config.yaml
+```
+
 Edit `config/config.yml` to select:
 
 - Historical seasons
