@@ -25,6 +25,10 @@ def build_features(historical_sessions, target_session):
     """
     y_train, df_train = build_training_data(historical_sessions)
 
+    constructor_strength, global_constructor_mean = compute_constructor_strength(
+        historical_sessions, target_session.event.year
+    )
+
     driver_avg_qual = (
         df_train
         .groupby('driver')['qual_position']
@@ -40,9 +44,14 @@ def build_features(historical_sessions, target_session):
     for col in ['fp1_gap', 'fp2_gap', 'fp3_gap']:
         df_train[col] = df_train[col].fillna(df_train[col].mean())
 
+    df_train['constructor_strength'] = df_train['constructor'].map(
+        lambda c: constructor_strength.get(c, global_constructor_mean)
+    )
+
     feature_cols = [
         'best_qual_time',
         'driver_avg_qual_pos',
+        'constructor_strength',
         'fp1_gap',
         'fp2_gap',
         'fp3_gap',
@@ -66,10 +75,12 @@ def build_features(historical_sessions, target_session):
             continue
 
         best_lap = laps['LapTime'].min().total_seconds()
+        constructor = laps['Team'].iloc[0]
 
         row = {
             'best_qual_time': best_lap,
             'driver_avg_qual_pos': driver_avg_qual.get(driver, global_driver_mean),
+            'constructor_strength': constructor_strength.get(constructor, global_constructor_mean),
             # Phase 1: FP gaps unavailable → fallback to training means
             'fp1_gap': X_train['fp1_gap'].mean(),
             'fp2_gap': X_train['fp2_gap'].mean(),
@@ -144,6 +155,7 @@ def build_training_data(historical_sessions):
 
             row = {
                 'driver': driver,
+                'constructor': constructor,
                 'best_qual_time': best_lap,
             }
 
