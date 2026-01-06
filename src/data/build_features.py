@@ -200,3 +200,69 @@ def safe_load_laps(sess):
         return None
     sess.load(laps=True, telemetry=False)
     return sess if hasattr(sess, "laps") else None
+
+
+def compute_constructor_strength(historical_sessions, target_year):
+    """
+    Compute constructor strength using recency-weighted historical qualifying positions.
+    Weights:
+        current=1.0, -1yr=0.8, -2yr=0.6, -3yr=0.4, -4yr+=0.2
+
+    Parameters
+    ----------
+    historical_sessions : list[dict]
+
+    target_year : int
+
+    Returns
+    ----------
+    constructor_strength : dict[str, float]
+        Mapping from constructor (team) name to its recency-weighted mean
+        qualifying position. Lower values indicate stronger constructors.
+
+    global_mean : float
+        Global mean qualifying position across all constructors and seasons.
+        Used as a fallback value for constructors with insufficient history.
+    """
+    from collections import defaultdict
+
+    DECAY_WEIGHTS = {0: 1.0, 1: 0.8, 2: 0.6, 3: 0.4}
+    DEFAULT_WEIGHT = 0.2  # 4+ years ago
+
+    constructor_season_positions = defaultdict(lambda: defaultdict(list))
+
+    for session in historical_sessions:
+        year = session['season']
+        if year >= target_year:
+            continue
+        results = session['session'].results
+
+        for _, entry in results.iterrows():
+            constructor = entry['TeamName']
+            qual_pos = entry['Position']
+
+            if pd.notna(qual_pos):
+                constructor_season_positions[constructor][year].append(int(qual_pos))
+
+    constructor_strength = {}
+    all_positions = []
+
+    for constructor, seasons in constructor_season_positions.items():
+        weighted_sum = 0.0
+        weight_total = 0.0
+
+        for year, positions in seasons.items():
+            years_ago = target_year - year - 1
+            weight = DECAY_WEIGHTS.get(years_ago, DEFAULT_WEIGHT)
+            mean_pos = sum(positions) / len(positions)
+            weighted_sum += weight * mean_pos
+            weight_total += weight
+            all_positions.extend(positions)
+
+        if weight_total > 0:
+            constructor_strength[constructor] = weighted_sum / weight_total
+
+    global_mean = sum(all_positions) / len(all_positions) if all_positions else 10.0
+
+    return constructor_strength, global_mean
+
