@@ -12,16 +12,22 @@ def build_features(historical_sessions, target_session):
 
     Parameters
     ----------
-    historical_sessions : dict
+    historical_sessions : list[dict]
 
-    target_session : dict
+    target_session : fastf1.core.Session
 
     Returns
     -------
     X_train : pd.DataFrame
+        Training feature matrix.
     y_train : np.ndarray
+        Training labels (qualifying positions).
     X_test : pd.DataFrame
+        Test feature matrix.
     y_test : np.ndarray
+        Test labels (qualifying positions).
+    test_driver_ids : list[str]
+        Driver abbreviations corresponding to test rows.
     """
     y_train, df_train = build_training_data(historical_sessions)
 
@@ -81,7 +87,6 @@ def build_features(historical_sessions, target_session):
             'best_qual_time': best_lap,
             'driver_avg_qual_pos': driver_avg_qual.get(driver, global_driver_mean),
             'constructor_strength': constructor_strength.get(constructor, global_constructor_mean),
-            # Phase 1: FP gaps unavailable → fallback to training means
             'fp1_gap': X_train['fp1_gap'].mean(),
             'fp2_gap': X_train['fp2_gap'].mean(),
             'fp3_gap': X_train['fp3_gap'].mean(),
@@ -107,12 +112,14 @@ def build_training_data(historical_sessions):
 
     Parameters
     ----------
-    historical_sessions : dict
+    historical_sessions : list[dict]
 
     Returns
     ----------
-    X_train : pd.DataFrame
     y_train : np.ndarray
+        Training labels (qualifying positions).
+    df_train : pd.DataFrame
+        Training DataFrame with features and 'qual_position' column.
     """
     train_rows = []
     train_labels = []
@@ -159,7 +166,6 @@ def build_training_data(historical_sessions):
                 'best_qual_time': best_lap,
             }
 
-            # FP gap features
             for fp_name, fp_session in zip(["fp1", "fp2", "fp3"], [fp1, fp2, fp3]):
                 gap_col = f"{fp_name}_gap"
 
