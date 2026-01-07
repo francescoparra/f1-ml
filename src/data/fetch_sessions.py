@@ -1,6 +1,6 @@
 import fastf1
 
-fastf1.Cache.enable_cache('data/raw/fastf1_cache')  # cached locally
+fastf1.Cache.enable_cache('data/raw/fastf1_cache')
 
 
 def fetch_target_session(target_config):
@@ -35,7 +35,8 @@ def fetch_historical_sessions(seasons, features_config):
 
     Returns
     -------
-    sessions_list : dict
+    sessions_list : list[dict]
+        List of dicts, each containing 'season', 'round', 'session', 'fp1', 'fp2', 'fp3'.
 
     Raises
     ------
@@ -50,13 +51,11 @@ def fetch_historical_sessions(seasons, features_config):
         for _, race in schedule.iterrows():
             round_num = race['RoundNumber']
             try:
-                # Load qualifying session
                 q_session = fastf1.get_session(year, round_num, 'Q')
                 q_session.load(laps=True)
 
                 row = {'season': year, 'round': round_num, 'session': q_session}
 
-                # Add FP sessions if requested
                 for fp in ['FP1', 'FP2', 'FP3']:
                     if features_config.get(f'use_{fp.lower()}', False):
                         try:
