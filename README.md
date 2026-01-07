@@ -21,6 +21,7 @@ At its current stage, the program:
 - Builds tabular features for each driver based on:
   - best qualifying lap time
   - free practice session performance (FP1, FP2, FP3 gaps to fastest lap)
+  - season-aware constructor strength, computed from historical qualifying results using recency-weighted averages
 - Trains a regression model to predict qualifying finishing positions
 - Predicts qualifying positions for a target race weekend
 - Evaluates predictions using standard regression and ranking metrics
