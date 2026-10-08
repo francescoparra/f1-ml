@@ -1,6 +1,8 @@
 /data/raw/fastf1_cache/*
 !/data/raw/fastf1_cache/.keep
-/outputs
+/data/processed/*
+!/data/processed/.keep
+/outputs/*
 !/outputs/.keep
 config.yaml
 __pycache__/
