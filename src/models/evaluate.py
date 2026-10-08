@@ -56,14 +56,16 @@ def evaluate(y_pred, y_true, metrics):
             f"Unknown metric(s): {unknown}. Supported: {list(SUPPORTED_METRICS)}"
         )
 
+    y_pred = np.asarray(y_pred, dtype=float)
+    y_true = np.asarray(y_true, dtype=float)
     results = {}
 
     if 'mae' in metrics:
         results['mae'] = mean_absolute_error(y_true, y_pred)
 
     if 'spearman' in metrics:
-        corr, _ = spearmanr(y_true, y_pred)
-        results['spearman'] = corr
+        constant = np.ptp(y_true) == 0 or np.ptp(y_pred) == 0
+        results['spearman'] = np.nan if constant else spearmanr(y_true, y_pred)[0]
 
     if 'top3_accuracy' in metrics:
         results['top3_accuracy'] = top_k_accuracy(y_pred, y_true, k=3)
