@@ -1,288 +1,199 @@
-from collections import defaultdict
-
-import pandas as pd
 import numpy as np
-from fastf1.core import DataNotLoadedError
+import pandas as pd
+
+FP_NUMBERS = (1, 2, 3)
+
+# FastF1 reports the same franchise under different names across seasons.
+TEAM_ALIASES = {
+    'Audi': 'Sauber',
+    'Alfa Romeo': 'Sauber',
+    'Alfa Romeo Racing': 'Sauber',
+    'Kick Sauber': 'Sauber',
+    'AlphaTauri': 'RB',
+    'Scuderia AlphaTauri': 'RB',
+    'Racing Bulls': 'RB',
+    'Visa Cash App RB': 'RB',
+    'Toro Rosso': 'RB',
+    'Renault': 'Alpine',
+    'Alpine F1 Team': 'Alpine',
+    'Racing Point': 'Aston Martin',
+    'Force India': 'Aston Martin',
+    'Haas F1 Team': 'Haas',
+    'Red Bull': 'Red Bull Racing',
+}
 
 
-def build_features(historical_sessions, target_session):
+def normalize_team(name):
+    """Map a FastF1 team name to a stable franchise name."""
+    return TEAM_ALIASES.get(name, name)
+
+
+def get_feature_columns(features_config):
     """
-    Build tabular features for baseline qualifying prediction.
+    Names of the model features for the given feature configuration.
 
-    One row = one driver
-    Target = qualifying position
+    Every feature is available BEFORE the target qualifying starts: free
+    practice data of the same weekend and form computed from earlier weekends.
+    """
+    use_fp = [features_config.get(f'use_fp{k}', True) for k in FP_NUMBERS]
+
+    columns = [f'fp{k}_gap_pct' for k, use in zip(FP_NUMBERS, use_fp) if use]
+    if any(use_fp):
+        columns += [
+            'fp_best_gap_pct',
+            'fp_best_rank',
+            'team_fp_gap_pct',
+            'fp_gap_vs_teammate',
+        ]
+    columns += [
+        'driver_prev_qual_mean',
+        'driver_last3_qual_mean',
+        'team_form_ewm',
+        'is_sprint_weekend',
+    ]
+    return columns
+
+
+def available_feature_columns(target_rows, feature_cols):
+    """
+    Features the target weekend can actually provide.
+
+    A feature that is NaN for every target driver (e.g. all FP features
+    before FP1) is dropped, and the model is trained without it. Training a
+    model on features that are never present at prediction time would make it
+    rely on a signal it will not get.
+    """
+    return [c for c in feature_cols if target_rows[c].notna().any()]
+
+
+def add_fp_features(df, features_config):
+    """
+    Add free practice pace features, computed inside each race weekend.
+
+    Gaps are percentages of the fastest lap of the session, so they are
+    comparable between circuits. Disabled or missing sessions yield NaN, which
+    XGBoost handles natively.
+    """
+    weekend = df['weekend_idx']
+    best_cols = []
+
+    for k in FP_NUMBERS:
+        best = df[f'fp{k}_best'].astype(float)
+        if not features_config.get(f'use_fp{k}', True):
+            best = pd.Series(np.nan, index=df.index)
+
+        session_best = best.groupby(weekend).transform('min')
+        df[f'fp{k}_gap_pct'] = (best - session_best) / session_best * 100
+        best_cols.append(best)
+
+    fp_best = pd.concat(best_cols, axis=1).min(axis=1)
+    overall_best = fp_best.groupby(weekend).transform('min')
+    df['fp_best_gap_pct'] = (fp_best - overall_best) / overall_best * 100
+    df['fp_best_rank'] = fp_best.groupby(weekend).rank(method='min')
+
+    team_key = [weekend, df['team']]
+    df['team_fp_gap_pct'] = df['fp_best_gap_pct'].groupby(team_key).transform('min')
+
+    gap = df['fp_best_gap_pct']
+    team_sum = gap.groupby(team_key).transform('sum')
+    team_count = gap.groupby(team_key).transform('count')
+    others_count = (team_count - gap.notna().astype(int)).replace(0, np.nan)
+    others_mean = (team_sum - gap.fillna(0)) / others_count
+    df['fp_gap_vs_teammate'] = gap - others_mean
+
+    return df
+
+
+def add_form_features(df, form_halflife):
+    """
+    Add driver and team form from STRICTLY earlier weekends.
+
+    Every statistic is shifted by one weekend before aggregating, so the
+    qualifying result being predicted can never leak into its own features.
+    `df` must be sorted chronologically.
+    """
+    by_driver = df.groupby('driver')['qual_position']
+
+    df['driver_prev_qual_mean'] = by_driver.transform(
+        lambda s: s.shift(1).expanding(min_periods=1).mean()
+    )
+    df['driver_last3_qual_mean'] = by_driver.transform(
+        lambda s: s.shift(1).rolling(3, min_periods=1).mean()
+    )
+
+    team_weekend = (
+        df.groupby(['team', 'weekend_idx'], sort=True)['qual_position']
+        .mean()
+        .reset_index()
+        .sort_values(['team', 'weekend_idx'])
+    )
+    team_weekend['team_form_ewm'] = team_weekend.groupby('team')['qual_position'].transform(
+        lambda s: s.shift(1).ewm(halflife=form_halflife, min_periods=1).mean()
+    )
+
+    return df.merge(
+        team_weekend[['team', 'weekend_idx', 'team_form_ewm']],
+        on=['team', 'weekend_idx'],
+        how='left',
+    )
+
+
+def build_feature_table(weekends, features_config, form_halflife=6.0):
+    """
+    Turn the per-driver weekend table into a leak-free feature table.
+
+    One row = one driver in one qualifying. Rows are ordered chronologically
+    and carry a `weekend_idx` (0, 1, 2, ...) used to split train/test by time.
+    The target weekend may have NaN `qual_position` (not run yet).
 
     Parameters
     ----------
-    historical_sessions : list[dict]
-
-    target_session : fastf1.core.Session
+    weekends : pd.DataFrame
+        Output of `fetch_weekends`.
+    features_config : dict
+        `use_fp1`, `use_fp2`, `use_fp3` flags.
+    form_halflife : float
+        Half-life, in weekends, of the exponentially weighted team form.
 
     Returns
     -------
-    X_train : pd.DataFrame
-        Training feature matrix.
-    y_train : np.ndarray
-        Training labels (qualifying positions).
-    X_test : pd.DataFrame
-        Test feature matrix.
-    y_test : np.ndarray
-        Test labels (qualifying positions).
-    test_driver_ids : list[str]
-        Driver abbreviations corresponding to test rows.
+    pd.DataFrame
+        Identifier columns, `qual_position` (label) and the feature columns
+        returned by `get_feature_columns`.
     """
-    y_train, df_train = build_training_data(historical_sessions)
+    df = weekends.copy()
+    df['team'] = df['team'].map(normalize_team)
+    df = df.sort_values(['season', 'round', 'driver']).reset_index(drop=True)
 
-    constructor_strength, global_constructor_mean = compute_constructor_strength(
-        historical_sessions, target_session.event.year
-    )
+    df['weekend_idx'] = df.groupby(['season', 'round']).ngroup()
 
-    driver_avg_qual = (
-        df_train
-        .groupby('driver')['qual_position']
-        .mean()
-    )
+    df['is_sprint_weekend'] = (df['event_format'] != 'conventional').astype(int)
 
-    global_driver_mean = driver_avg_qual.mean()
+    df = add_fp_features(df, features_config)
+    df = add_form_features(df, form_halflife)
 
-    df_train['driver_avg_qual_pos'] = df_train['driver'].map(
-        lambda d: driver_avg_qual.get(d, global_driver_mean)
-    )
-
-    for col in ['fp1_gap', 'fp2_gap', 'fp3_gap']:
-        df_train[col] = df_train[col].fillna(df_train[col].mean())
-
-    df_train['constructor_strength'] = df_train['constructor'].map(
-        lambda c: constructor_strength.get(c, global_constructor_mean)
-    )
-
-    feature_cols = [
-        'best_qual_time',
-        'driver_avg_qual_pos',
-        'constructor_strength',
-        'fp1_gap',
-        'fp2_gap',
-        'fp3_gap',
-    ]
-
-    X_train = df_train[feature_cols]
-
-    test_rows = []
-    test_labels = []
-    test_driver_ids = []
-
-    q = target_session
-    results = q.results[['Abbreviation', 'Position']].dropna()
-
-    for driver in q.laps['Driver'].unique():
-        if driver not in results['Abbreviation'].values:
-            continue
-
-        laps = q.laps.pick_drivers([driver])
-        if laps.empty:
-            continue
-
-        best_lap = laps['LapTime'].min().total_seconds()
-        constructor = laps['Team'].iloc[0]
-
-        row = {
-            'best_qual_time': best_lap,
-            'driver_avg_qual_pos': driver_avg_qual.get(driver, global_driver_mean),
-            'constructor_strength': constructor_strength.get(constructor, global_constructor_mean),
-            'fp1_gap': X_train['fp1_gap'].mean(),
-            'fp2_gap': X_train['fp2_gap'].mean(),
-            'fp3_gap': X_train['fp3_gap'].mean(),
-        }
-
-        qual_position = int(
-            results.loc[results['Abbreviation'] == driver, 'Position'].iloc[0]
-        )
-
-        test_rows.append(row)
-        test_labels.append(qual_position)
-        test_driver_ids.append(driver)
-
-    X_test = pd.DataFrame(test_rows)
-    y_test = np.array(test_labels)
-
-    return X_train, y_train, X_test, y_test, test_driver_ids
+    id_cols = ['season', 'round', 'event_name', 'weekend_idx', 'driver', 'team', 'qual_position']
+    return df[id_cols + get_feature_columns(features_config)]
 
 
-def build_training_data(historical_sessions):
+def split_train_target(table, target_season, target_round):
     """
-    Build training data for baseline qualifying prediction.
+    Split the feature table into labelled training rows and the target weekend.
 
-    Parameters
-    ----------
-    historical_sessions : list[dict]
+    Training rows are only weekends strictly before the target.
 
     Returns
-    ----------
-    y_train : np.ndarray
-        Training labels (qualifying positions).
-    df_train : pd.DataFrame
-        Training DataFrame with features and 'qual_position' column.
+    -------
+    train : pd.DataFrame
+    target : pd.DataFrame
+        All drivers of the target weekend (labels may be NaN).
     """
-    train_rows = []
-    train_labels = []
+    is_target = (table['season'] == target_season) & (table['round'] == target_round)
+    if not is_target.any():
+        raise ValueError(f"Target weekend {target_season} round {target_round} not found")
 
-    for s in historical_sessions:
-        q = safe_load_laps(s['session'])
-        if not hasattr(q, 'laps') or q.laps is None:
-            q.load(laps=True, telemetry=False)
+    target = table[is_target].copy()
+    target_idx = target['weekend_idx'].iloc[0]
+    train = table[(table['weekend_idx'] < target_idx) & table['qual_position'].notna()].copy()
 
-        fp1 = safe_load_laps(s.get("fp1"))
-        fp2 = safe_load_laps(s.get("fp2"))
-        fp3 = safe_load_laps(s.get("fp3"))
-
-        for fp in (fp1, fp2, fp3):
-            if fp is not None and (not hasattr(fp, 'laps') or fp.laps is None):
-                fp.load(laps=True, telemetry=False)
-
-        results = q.results[['Abbreviation', 'Position']].dropna()
-
-        for driver in q.laps['Driver'].unique():
-            if driver not in results['Abbreviation'].values:
-                continue
-
-            laps = q.laps.pick_drivers([driver])
-            if laps.empty:
-                continue
-
-            best_lap = laps['LapTime'].min().total_seconds()
-            constructor = laps['Team'].iloc[0]
-
-            if pd.isna(constructor):
-                continue
-
-            qual_position = int(
-                results.loc[results['Abbreviation'] == driver, 'Position'].iloc[0]
-            )
-
-            if not np.isfinite(qual_position):
-                continue
-
-            row = {
-                'driver': driver,
-                'constructor': constructor,
-                'best_qual_time': best_lap,
-            }
-
-            for fp_name, fp_session in zip(["fp1", "fp2", "fp3"], [fp1, fp2, fp3]):
-                gap_col = f"{fp_name}_gap"
-
-                if fp_session is None:
-                    row[gap_col] = np.nan
-                    continue
-
-                try:
-                    fp_laps = fp_session.laps
-                except DataNotLoadedError:
-                    row[gap_col] = np.nan
-                    continue
-
-                driver_laps = fp_laps.pick_drivers([driver])
-                if driver_laps.empty:
-                    row[gap_col] = np.nan
-                    continue
-
-                driver_time = driver_laps["LapTime"].min().total_seconds()
-                fastest = fp_laps["LapTime"].min().total_seconds()
-                row[gap_col] = driver_time - fastest
-
-            train_rows.append(row)
-            train_labels.append(qual_position)
-
-    df_train = pd.DataFrame(train_rows)
-    y_train = np.array(train_labels)
-    df_train['qual_position'] = y_train
-
-    return y_train, df_train
-
-
-def safe_load_laps(sess):
-    """
-    Safely load lap data for a FastF1 session.
-
-    This helper ensures that lap data is loaded before access and prevents
-    `DataNotLoadedError` when working with optional sessions (e.g. FP1/FP2/FP3).
-    If the session is None or lap data cannot be accessed, the function returns None.
-
-    Parameters
-    ----------
-    sess : fastf1.core.Session | None
-
-    Returns
-    ----------
-    sess : fastf1.core.Session | None
-    """
-    if sess is None:
-        return None
-    sess.load(laps=True, telemetry=False)
-    return sess if hasattr(sess, "laps") else None
-
-
-def compute_constructor_strength(historical_sessions, target_year):
-    """
-    Compute constructor strength using recency-weighted historical qualifying positions.
-    Only seasons strictly before `target_year` are used, so the target season
-    never leaks into its own strength estimate. Weights by distance from the
-    target season:
-        last season=1.0, -1yr=0.8, -2yr=0.6, -3yr=0.4, older=0.2
-
-    Parameters
-    ----------
-    historical_sessions : list[dict]
-
-    target_year : int
-
-    Returns
-    ----------
-    constructor_strength : dict[str, float]
-        Mapping from constructor (team) name to its recency-weighted mean
-        qualifying position. Lower values indicate stronger constructors.
-
-    global_mean : float
-        Global mean qualifying position across all constructors and seasons.
-        Used as a fallback value for constructors with insufficient history.
-    """
-    DECAY_WEIGHTS = {0: 1.0, 1: 0.8, 2: 0.6, 3: 0.4}
-    DEFAULT_WEIGHT = 0.2  # 4+ years ago
-
-    constructor_season_positions = defaultdict(lambda: defaultdict(list))
-
-    for session in historical_sessions:
-        year = session['season']
-        if year >= target_year:
-            continue
-        results = session['session'].results
-
-        for _, entry in results.iterrows():
-            constructor = entry['TeamName']
-            qual_pos = entry['Position']
-
-            if pd.notna(qual_pos):
-                constructor_season_positions[constructor][year].append(int(qual_pos))
-
-    constructor_strength = {}
-    all_positions = []
-
-    for constructor, seasons in constructor_season_positions.items():
-        weighted_sum = 0.0
-        weight_total = 0.0
-
-        for year, positions in seasons.items():
-            years_ago = target_year - year - 1
-            weight = DECAY_WEIGHTS.get(years_ago, DEFAULT_WEIGHT)
-            mean_pos = sum(positions) / len(positions)
-            weighted_sum += weight * mean_pos
-            weight_total += weight
-            all_positions.extend(positions)
-
-        if weight_total > 0:
-            constructor_strength[constructor] = weighted_sum / weight_total
-
-    global_mean = sum(all_positions) / len(all_positions) if all_positions else 10.0
-
-    return constructor_strength, global_mean
-
+    return train, target
