@@ -3,3 +3,8 @@
 /outputs
 !/outputs/.keep
 config.yaml
+__pycache__/
+*.pyc
+.idea/
+.mypy_cache/
+.pytest_cache/
