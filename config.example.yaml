@@ -1,34 +1,34 @@
 # Example configuration. Copy it to `config.yaml` (git-ignored) and edit it:
 #   cp config.example.yaml config.yaml
 
-# Params to fetch the target session, which is needed to get
-# the driver list, session metadata, and eventual lap times
+# The qualifying session to predict. It can be a past one (predictions are
+# compared with the real result) or an upcoming one whose free practice has
+# already happened (predictions only, no metrics).
 target_session:
-  # Season and round of the target session
   season: 2025
   round: 24
 
-# Params to fetch historical data for training purposes.
-# Data from years prior 2018 might not be present or with less data.
-# Seasons >= the target season are NOT used for constructor strength, so include
-# at least one earlier season (e.g. target 2025 -> history [2022, 2023, 2024]).
+# Seasons used for training. The target season is always added automatically:
+# only its rounds BEFORE the target round are used, so there is no future leak.
+# Data from years prior to 2018 might be missing or incomplete.
 history:
-  # The seasons we want to use for training
-  seasons: [2022, 2023, 2024]
+  seasons: [2023, 2024, 2025]
 
-# The features of the application
 features:
-  # Whether to use or not Free Practice data for training, if present
+  # Free practice sessions to use. Sprint weekends have no FP2/FP3: missing
+  # sessions are handled as missing values.
   use_fp1: true
   use_fp2: true
   use_fp3: true
+  # Half-life (in race weekends) of the exponentially weighted team form.
+  # Lower = reacts faster to car upgrades.
+  form_halflife: 6
 
-# The settings for the model that you'll use
 model:
   type: xgboost
   params:
     n_estimators: 200
-    max_depth: 4
+    max_depth: 3
     learning_rate: 0.05
     min_child_weight: 3
     subsample: 0.8
@@ -37,12 +37,20 @@ model:
     reg_lambda: 1.0
     random_state: 42
 
+# Walk-forward validation: for each of the last `n_rounds` weekends before the
+# target, train only on earlier weekends and score that weekend. The model is
+# compared with two naive baselines (FP order and recent driver form).
+validation:
+  enabled: true
+  n_rounds: 10
+  min_train_weekends: 5
+
 # Available metrics: mae, spearman, top3_accuracy
 evaluation:
   metrics: [mae, spearman, top3_accuracy]
 
-# Output settings, basically where you want to have your prediction
-# file to be generated.
 output:
   predictions_file: outputs/predictions.csv
   metrics_file: outputs/metrics.csv
+  backtest_file: outputs/backtest.csv
+  backtest_summary_file: outputs/backtest_summary.csv
