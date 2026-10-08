@@ -1,3 +1,5 @@
+from collections import defaultdict
+
 import pandas as pd
 import numpy as np
 from fastf1.core import DataNotLoadedError
@@ -223,8 +225,10 @@ def safe_load_laps(sess):
 def compute_constructor_strength(historical_sessions, target_year):
     """
     Compute constructor strength using recency-weighted historical qualifying positions.
-    Weights:
-        current=1.0, -1yr=0.8, -2yr=0.6, -3yr=0.4, -4yr+=0.2
+    Only seasons strictly before `target_year` are used, so the target season
+    never leaks into its own strength estimate. Weights by distance from the
+    target season:
+        last season=1.0, -1yr=0.8, -2yr=0.6, -3yr=0.4, older=0.2
 
     Parameters
     ----------
@@ -242,8 +246,6 @@ def compute_constructor_strength(historical_sessions, target_year):
         Global mean qualifying position across all constructors and seasons.
         Used as a fallback value for constructors with insufficient history.
     """
-    from collections import defaultdict
-
     DECAY_WEIGHTS = {0: 1.0, 1: 0.8, 2: 0.6, 3: 0.4}
     DEFAULT_WEIGHT = 0.2  # 4+ years ago
 
