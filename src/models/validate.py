@@ -14,14 +14,17 @@ def baseline_predictions(test, use_fp=True):
       lap (falls back to the driver's recent form when FP data is missing).
       Skipped when `use_fp` is False (prediction made before any FP).
     - `baseline_driver_form`: mean of the driver's last 3 qualifying positions.
+    - `baseline_form_blend`: the hand-made driver/team form blend, with no
+      learning. The model has to beat it to justify itself.
     """
     fallback = (len(test) + 1) / 2
-    form = test['driver_last3_qual_mean'].fillna(fallback)
+    form = test['driver_last3'].fillna(fallback)
 
     baselines = {}
     if use_fp:
         baselines['baseline_fp_rank'] = test['fp_best_rank'].fillna(form)
     baselines['baseline_driver_form'] = form
+    baselines['baseline_form_blend'] = test['form_blend'].fillna(form)
     return baselines
 
 
@@ -33,6 +36,7 @@ def walk_forward_validation(
     n_rounds=10,
     min_train_weekends=5,
     before_idx=None,
+    eval_sprint=None,
 ):
     """
     Time-based (walk-forward) validation over several race weekends.
@@ -58,6 +62,10 @@ def walk_forward_validation(
     before_idx : int | None
         Only weekends with `weekend_idx` lower than this are used
         (pass the target weekend index to keep the target out of validation).
+    eval_sprint : int | None
+        If 0 or 1, only weekends whose `is_sprint_weekend` equals it are
+        scored (training still uses every earlier weekend). Used to validate on
+        weekends of the same kind as the target.
 
     Returns
     -------
@@ -71,7 +79,11 @@ def walk_forward_validation(
         labeled = labeled[labeled['weekend_idx'] < before_idx]
 
     weekend_ids = sorted(labeled['weekend_idx'].unique())
-    eval_ids = weekend_ids[min_train_weekends:][-n_rounds:]
+    candidates = weekend_ids[min_train_weekends:]
+    if eval_sprint is not None:
+        kind = labeled.groupby('weekend_idx')['is_sprint_weekend'].first()
+        candidates = [w for w in candidates if kind[w] == eval_sprint]
+    eval_ids = candidates[-n_rounds:]
 
     rows = []
     for weekend_id in eval_ids:
