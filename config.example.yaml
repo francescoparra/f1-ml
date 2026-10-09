@@ -10,9 +10,11 @@ target_session:
 
 # Seasons used for training. The target season is always added automatically:
 # only its rounds BEFORE the target round are used, so there is no future leak.
-# Data from years prior to 2018 might be missing or incomplete.
+# Recent form only looks at the last 24 races, but older seasons are still
+# useful: they feed the driver's track record at each circuit. Data from years
+# prior to 2018 might be missing or incomplete. More seasons = slower first run.
 history:
-  seasons: [2023, 2024, 2025]
+  seasons: [2019, 2020, 2021, 2022, 2023, 2024, 2025]
 
 features:
   # Free practice sessions to use. Sprint weekends have no FP2/FP3: missing
@@ -20,9 +22,18 @@ features:
   use_fp1: true
   use_fp2: true
   use_fp3: true
-  # Half-life (in race weekends) of the exponentially weighted team form.
-  # Lower = reacts faster to car upgrades.
-  form_halflife: 6
+  # Sprint sessions that run BEFORE qualifying (sprint qualifying / shootout and
+  # the sprint itself). Sessions held after qualifying are never used.
+  use_sprint: true
+  # Form windows, counted in races and crossing season boundaries: the last
+  # `recent_window` races are the strongest signal (momentum, car upgrades), the
+  # `older_window` races before them add data but count `older_weight` times as much.
+  recent_window: 12
+  older_window: 12
+  older_weight: 0.4
+  # Track record at a circuit is shrunk towards 0: with n earlier visits the
+  # driver's over/under-performance is divided by (n + circuit_shrinkage).
+  circuit_shrinkage: 2.0
 
 model:
   type: xgboost
@@ -39,11 +50,13 @@ model:
 
 # Walk-forward validation: for each of the last `n_rounds` weekends before the
 # target, train only on earlier weekends and score that weekend. The model is
-# compared with two naive baselines (FP order and recent driver form).
+# compared with naive baselines (FP order, recent driver form, form blend).
 validation:
   enabled: true
   n_rounds: 10
   min_train_weekends: 5
+  # Score only weekends of the same kind as the target (sprint vs normal)
+  same_kind_only: true
 
 # Available metrics: mae, spearman, top3_accuracy
 evaluation:
