@@ -52,9 +52,7 @@ def main(config_path='config.yaml', refresh=False, season=None, round_num=None):
     weekends = fetch_weekends(config['history']['seasons'], target, refresh=refresh)
 
     # Build leak-free features and split by time
-    table = build_feature_table(
-        weekends, features_config, features_config.get('form_halflife', 6.0)
-    )
+    table = build_feature_table(weekends, features_config)
     train, target_rows = split_train_target(table, target['season'], target['round'])
     feature_cols = available_feature_columns(target_rows, get_feature_columns(features_config))
     dropped = set(get_feature_columns(features_config)) - set(feature_cols)
@@ -78,13 +76,20 @@ def main(config_path='config.yaml', refresh=False, season=None, round_num=None):
             n_rounds=validation_config.get('n_rounds', 10),
             min_train_weekends=validation_config.get('min_train_weekends', 5),
             before_idx=target_rows['weekend_idx'].iloc[0],
+            eval_sprint=(
+                int(target_rows['is_sprint_weekend'].iloc[0])
+                if validation_config.get('same_kind_only', True) else None
+            ),
         )
         if per_weekend.empty:
             print("Not enough history to run the walk-forward validation.")
         else:
             save_csv(per_weekend, output.get('backtest_file', 'outputs/backtest.csv'))
             save_csv(summary, output.get('backtest_summary_file', 'outputs/backtest_summary.csv'))
-            print(f"\nWalk-forward validation ({int(summary['n_weekends'].iloc[0])} weekends):")
+            kind = ''
+            if validation_config.get('same_kind_only', True):
+                kind = ' sprint' if target_rows['is_sprint_weekend'].iloc[0] else ' non-sprint'
+            print(f"\nWalk-forward validation ({int(summary['n_weekends'].iloc[0])}{kind} weekends):")
             print(summary.round(3).to_string(index=False))
 
     # Train on everything before the target weekend and predict it
@@ -95,7 +100,8 @@ def main(config_path='config.yaml', refresh=False, season=None, round_num=None):
         [
             target_rows[['driver', 'team']],
             predictions,
-            target_rows['qual_position'].rename('actual_position'),
+            # nullable integer: whole numbers in the CSV, empty when not run yet
+            target_rows['qual_position'].astype('Int64').rename('actual_position'),
         ],
         axis=1,
     ).sort_values('predicted_rank')
@@ -105,7 +111,7 @@ def main(config_path='config.yaml', refresh=False, season=None, round_num=None):
     if target_rows['qual_position'].notna().all():
         metrics = evaluate(
             predictions_df['predicted_position'].to_numpy(),
-            predictions_df['actual_position'].to_numpy(),
+            predictions_df['actual_position'].to_numpy(dtype=float),
             metric_names,
         )
         save_csv(pd.DataFrame([metrics]), output['metrics_file'])
